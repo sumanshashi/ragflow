@@ -106,6 +106,9 @@ class Chunk(BaseModel):
     image_id: str = ""
     available: bool = True
     positions: list[list[int]] = Field(default_factory=list)
+    doc_type_kwd: str = ""
+    table_cells_obj: dict | None = None
+    table_id: str | None = None
 
     @validator("positions")
     def validate_positions(cls, value):
@@ -113,6 +116,46 @@ class Chunk(BaseModel):
             if len(sublist) != 5:
                 raise ValueError("Each sublist in positions must have a length of 5")
         return value
+
+    @validator("table_cells_obj", pre=True)
+    def coerce_table_cells_obj(cls, value):
+        """ES/Infinity may return a JSON or Python-repr string; coerce to dict."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                try:
+                    import ast
+
+                    parsed = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+
+def _coerce_table_cells_obj(value):
+    """Parse table_cells_obj from dict / JSON / Python-repr string."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            try:
+                import ast
+
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
 
 
 def _map_doc(doc):
@@ -495,6 +538,9 @@ async def list_chunks(tenant_id, dataset_id, document_id):
             "positions": chunk.get("position_int", []),
             "tag_kwd": chunk.get("tag_kwd", []),
             "tag_feas": chunk.get("tag_feas", {}),
+            "doc_type_kwd": chunk.get("doc_type_kwd", ""),
+            "table_cells_obj": _coerce_table_cells_obj(chunk.get("table_cells_obj")),
+            "table_id": chunk.get("table_id"),
         }
         res["chunks"].append(final_chunk)
         _ = Chunk(**final_chunk)
@@ -520,6 +566,9 @@ async def list_chunks(tenant_id, dataset_id, document_id):
                 "image_id": sres.field[chunk_id].get("img_id", ""),
                 "available": bool(int(sres.field[chunk_id].get("available_int", "1"))),
                 "positions": sres.field[chunk_id].get("position_int", []),
+                "doc_type_kwd": sres.field[chunk_id].get("doc_type_kwd", ""),
+                "table_cells_obj": _coerce_table_cells_obj(sres.field[chunk_id].get("table_cells_obj")),
+                "table_id": sres.field[chunk_id].get("table_id"),
             }
             res["chunks"].append(d)
             _ = Chunk(**d)
@@ -890,6 +939,28 @@ async def add_chunk(tenant_id, dataset_id, document_id):
             d["tag_feas"] = validate_tag_features(req["tag_feas"])
         except ValueError as exc:
             return get_error_data_result(f"`tag_feas` {exc}")
+    if isinstance(req.get("table_cells_obj"), dict) and req["table_cells_obj"]:
+        d["table_cells_obj"] = req["table_cells_obj"]
+    if req.get("table_id"):
+        d["table_id"] = str(req["table_id"])
+
+    # Lithica / geoscience ingest: persist layout positions so list + retrieval
+    # can sort by reading order (page_num_int / top_int) and return positions.
+    if "positions" in req:
+        if not isinstance(req["positions"], list):
+            return get_error_data_result("`positions` is required to be a list")
+        position_int = []
+        for item in req["positions"]:
+            if not isinstance(item, (list, tuple)) or len(item) != 5:
+                return get_error_data_result("Each entry in `positions` must be a list of 5 integers")
+            try:
+                position_int.append([int(item[0]), int(item[1]), int(item[2]), int(item[3]), int(item[4])])
+            except (TypeError, ValueError):
+                return get_error_data_result("Each entry in `positions` must be a list of 5 integers")
+        if position_int:
+            d["position_int"] = position_int
+            d["page_num_int"] = [p[0] for p in position_int]
+            d["top_int"] = [p[3] for p in position_int]
 
     if "image_base64" in req:
         image_binary, image_err = _decode_chunk_image_base64(req.get("image_base64"))
@@ -900,6 +971,8 @@ async def add_chunk(tenant_id, dataset_id, document_id):
             return get_error_data_result(message=store_err)
         d["img_id"] = f"{dataset_id}-{chunk_id}"
         d["doc_type_kwd"] = "image"
+    elif req.get("doc_type_kwd") in {"table", "table_row"}:
+        d["doc_type_kwd"] = req["doc_type_kwd"]
 
     embd_id = DocumentService.get_embd_id(document_id)
     model_config = resolve_model_config(dataset_tenant_id, LLMType.EMBEDDING.value, embd_id)
@@ -916,15 +989,26 @@ async def add_chunk(tenant_id, dataset_id, document_id):
         "doc_id": "document_id",
         "important_kwd": "important_keywords",
         "tag_kwd": "tag_kwd",
+        "tag_feas": "tag_feas",
         "question_kwd": "questions",
         "kb_id": "dataset_id",
         "create_timestamp_flt": "create_timestamp",
         "create_time": "create_time",
         "document_keyword": "document",
         "img_id": "image_id",
+        "doc_type_kwd": "doc_type_kwd",
+        "table_cells_obj": "table_cells_obj",
+        "table_id": "table_id",
+        "position_int": "positions",
     }
     renamed_chunk = {new_key: d[key] for key, new_key in key_mapping.items() if key in d}
-    _ = Chunk(**renamed_chunk)
+    # Extra sort fields for clients (not on Chunk pydantic model)
+    if "page_num_int" in d:
+        renamed_chunk["page_num_int"] = d["page_num_int"]
+    if "top_int" in d:
+        renamed_chunk["top_int"] = d["top_int"]
+    chunk_fields = getattr(Chunk, "model_fields", None) or getattr(Chunk, "__fields__", {})
+    _ = Chunk(**{k: v for k, v in renamed_chunk.items() if k in chunk_fields})
     return get_result(data={"chunk": renamed_chunk})
 
 
@@ -1025,7 +1109,18 @@ async def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
     if "positions" in req:
         if not isinstance(req["positions"], list):
             return get_error_data_result("`positions` should be a list")
-        d["position_int"] = req["positions"]
+        position_int = []
+        for item in req["positions"]:
+            if not isinstance(item, (list, tuple)) or len(item) != 5:
+                return get_error_data_result("Each entry in `positions` must be a list of 5 integers")
+            try:
+                position_int.append([int(item[0]), int(item[1]), int(item[2]), int(item[3]), int(item[4])])
+            except (TypeError, ValueError):
+                return get_error_data_result("Each entry in `positions` must be a list of 5 integers")
+        d["position_int"] = position_int
+        if position_int:
+            d["page_num_int"] = [p[0] for p in position_int]
+            d["top_int"] = [p[3] for p in position_int]
     if "tag_kwd" in req:
         if not isinstance(req["tag_kwd"], list):
             return get_error_data_result("`tag_kwd` should be a list")
@@ -1037,6 +1132,10 @@ async def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
             d["tag_feas"] = validate_tag_features(req["tag_feas"])
         except ValueError as exc:
             return get_error_data_result(f"`tag_feas` {exc}")
+    if isinstance(req.get("table_cells_obj"), dict) and req["table_cells_obj"]:
+        d["table_cells_obj"] = req["table_cells_obj"]
+    if req.get("table_id"):
+        d["table_id"] = str(req["table_id"])
     if "image_base64" in req:
         image_binary, image_err = _decode_chunk_image_base64(req.get("image_base64"))
         if image_err:
@@ -1046,6 +1145,8 @@ async def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
             return get_error_data_result(message=store_err)
         d["img_id"] = f"{dataset_id}-{chunk_id}"
         d["doc_type_kwd"] = "image"
+    elif req.get("doc_type_kwd") in {"table", "table_row"}:
+        d["doc_type_kwd"] = req["doc_type_kwd"]
 
     embd_id = DocumentService.get_embd_id(document_id)
     model_config = resolve_model_config(dataset_tenant_id, LLMType.EMBEDDING.value, embd_id)

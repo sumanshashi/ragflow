@@ -262,3 +262,15 @@ internal/deepdoc/parser/docx/tool/
 internal/ingestion/task/tool/generate_dataflow_golden.py
 internal/ingestion/task/tool/README.md
 internal/cpp/cmake-build-release
+
+for_update
+.cursor
+.cursor/context
+.cursor/rules
+.cursor/skills
+
+LANGCHAIN_CHUNKING_CONFIG.md
+geoscience_README.md
+
+rag/app/geoscience
+rag/app/geoscience_config.py

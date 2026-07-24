@@ -37,6 +37,8 @@
 	"mom_with_weight": {"type": "varchar", "default": ""},
 	"removed_kwd": {"type": "varchar", "default": "", "analyzer": "whitespace-#"},
 	"doc_type_kwd": {"type": "varchar", "default": "", "analyzer": "whitespace-#"},
+	"table_cells_obj": {"type": "varchar", "default": ""},
+	"table_id": {"type": "varchar", "default": ""},
 	"toc_kwd": {"type": "varchar", "default": "", "analyzer": "whitespace-#"},
 	"raptor_kwd": {"type": "varchar", "default": "", "analyzer": "whitespace-#"},
 	"raptor_layer_int": {"type": "integer", "default": 0},

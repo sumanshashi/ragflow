@@ -162,6 +162,8 @@ class Dealer:
                 "question_kwd",
                 "question_tks",
                 "doc_type_kwd",
+                "table_cells_obj",
+                "table_id",
                 "available_int",
                 "content_with_weight",
                 "mom_id",
@@ -711,6 +713,22 @@ class Dealer:
                 "mom_id": chunk.get("mom_id", ""),
                 "row_id": chunk.get("row_id()"),
             }
+            # Preserve structured table fields (Infinity may return JSON string)
+            for field in ("table_cells_obj", "table_id"):
+                if field not in chunk:
+                    continue
+                value = chunk[field]
+                if field == "table_cells_obj" and isinstance(value, str) and value:
+                    try:
+                        value = json.loads(value)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        try:
+                            import ast
+
+                            value = ast.literal_eval(value)
+                        except (ValueError, SyntaxError):
+                            pass
+                d[field] = value
             if highlight and sres.highlight:
                 if id in sres.highlight:
                     d["highlight"] = remove_redundant_spaces(sres.highlight[id])
@@ -890,6 +908,9 @@ class Dealer:
                 "positions": chunk.get("position_int", []),
                 "doc_type_kwd": chunk.get("doc_type_kwd", ""),
             }
+            for field in ("table_cells_obj", "table_id"):
+                if field in chunk:
+                    d[field] = chunk[field]
             for k in chunk.keys():
                 if k[-4:] == "_vec":
                     d["vector"] = chunk[k]
@@ -946,6 +967,9 @@ class Dealer:
                 "positions": chunk.get("position_int", []),
                 "doc_type_kwd": chunk.get("doc_type_kwd", ""),
             }
+            for field in ("table_cells_obj", "table_id"):
+                if field in chunk:
+                    d[field] = chunk[field]
             for k in cks[0].keys():
                 if k[-4:] == "_vec":
                     d["vector"] = cks[0][k]

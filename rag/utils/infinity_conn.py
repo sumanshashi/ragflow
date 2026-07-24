@@ -449,6 +449,12 @@ class InfinityConnection(InfinityConnectionBase):
                             d[k] = json.dumps(v)
                         else:
                             d[k] = v
+                    elif k == "table_cells_obj":
+                        # Lossless HTML table cell grid; Infinity stores as varchar JSON.
+                        if isinstance(v, dict):
+                            d[k] = json.dumps(v, ensure_ascii=False)
+                        else:
+                            d[k] = v if v else ""
                     elif k == "extra":
                         # RAPTOR writes {"raptor_method": ...} as a dict; Infinity's
                         # `extra` column is varchar so we serialize on the write path.
@@ -582,6 +588,11 @@ class InfinityConnection(InfinityConnectionBase):
                         new_value[k] = v
                 elif re.search(r"_feas$", k):
                     new_value[k] = json.dumps(v)
+                elif k == "table_cells_obj":
+                    if isinstance(v, dict):
+                        new_value[k] = json.dumps(v, ensure_ascii=False)
+                    else:
+                        new_value[k] = v if v else ""
                 elif k == "kb_id":
                     if isinstance(new_value[k], list):
                         new_value[k] = new_value[k][0]  # since d[k] is a list, but we need a str
@@ -797,6 +808,26 @@ class InfinityConnection(InfinityConnectionBase):
             elif k == "chunk_data":
                 # Parse JSON data back to dict for table parser fields
                 res2[column] = res2[column].apply(lambda v: json.loads(v) if v and isinstance(v, str) else v)
+            elif k == "table_cells_obj":
+                # Parse lossless table cell grid JSON back to dict
+                def _parse_table_cells(v):
+                    if not v:
+                        return None
+                    if isinstance(v, dict):
+                        return v
+                    if isinstance(v, str):
+                        try:
+                            return json.loads(v)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            try:
+                                import ast
+
+                                return ast.literal_eval(v)
+                            except (ValueError, SyntaxError):
+                                return None
+                    return None
+
+                res2[column] = res2[column].apply(_parse_table_cells)
             elif k == "position_int":
 
                 def to_position_int(v):
